@@ -8,7 +8,7 @@
 
 bool forwarding;
 bool split_regfile;
-
+// hihihihihihihi
 void DumpCoreState(SIM_coreState *state) {
     int i;
     SIM_cmd *curCmd;

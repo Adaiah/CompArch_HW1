@@ -1,6 +1,6 @@
 /* 046267 Computer Architecture - Spring 2017 - HW #1 */
 /* Main memory simulator implementation               */
-// this is an announcement heloo!!!
+
 #include "sim_api.h"
 
 uint32_t prog_start; // the addr of the code block
