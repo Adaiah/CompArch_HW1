@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "sim_api.h"
-//123456!!!!!!!!!!!!!!!!!!!
+
 bool forwarding;
 bool split_regfile;
 
