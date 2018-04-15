@@ -2,8 +2,13 @@
 /* This file should hold your implementation of the CPU pipeline core simulator */
 
 #include "sim_api.h"
-static int ALUOut;
 static SIM_coreState mainCoreState;
+static int32_t EX_ans[2] = {0,0}, MEM_ans[2] = {0,0}, WB_ans[2] = {0,0};
+static int stages_filled = 0;
+static int32_t stage_pc[SIM_PIPELINE_DEPTH] = {0};
+
+//0 - new command output
+//1 - old command output
 
 /*! SIM_CoreReset: Reset the processor core simulator machine to start new simulation
   Use this API to initialize the processor core simulator's data structures.
@@ -34,43 +39,69 @@ void SIM_CoreClkTick() {
 	memset(wb_pipe, mainCoreState.pipeStageState[4].cmd, sizeof(SIM_cmd));
 	if( !split_regfile && !forwarding ) {//when we start the machine nothing is initialized!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 										 // should also do something with src1Val and src2Val!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-		// IF -> ID
+		// IF 
 		SIM_MemInstRead(mainCoreState.pc, mainCoreState.pipeStageState[0].cmd);
 		mainCoreState.pc += 4;
-		// ID -> EX
-		memset(mainCoreState.pipeStageState[1].cmd, if_pipe, sizeof(SIM_cmd));
-		// EX -> MEM
-		memset(mainCoreState.pipeStageState[2].cmd, id_pipe, sizeof(SIM_cmd));
-		SIM_cmd EX_tmp = mainCoreState.pipeStageState[2].cmd;
-		SIM_cmd_opcode opc = EX_tmp.opcode;
-		int EX_ans = 0;
-		if(opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI) {
-			if(!EX_tmp.cmd.dst)
-				EX_ans = makeArith(EX_tmp.cmd.src1, EX_tmp.cmd.src2, EX_tmp.cmd.isSrc2Imm, EX_tmp.cmd.dst, opc);
+		stage_pc[stages_filled % SIM_PIPELINE_DEPTH] = mainCoreState.pc;
+		// ID
+		if(stages_filled >= 1) {
+			memset(mainCoreState.pipeStageState[1].cmd, if_pipe, sizeof(SIM_cmd));
 		}
-		else if(opc == CMD_LOAD || opc == CMD_STORE) {
-			if(!EX_tmp.cmd.dst)
-				EX_ans = EX_tmp.cmd.src1 + EX_tmp.cmd.src2
+		// EX
+		if(stages_filled >= 2) {
+			EX_ans[1] = EX_ans[0];
+			memset(mainCoreState.pipeStageState[2].cmd, id_pipe, sizeof(SIM_cmd));
+			SIM_cmd_opcode opc = id_pipe.opcode;
+			if(opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI) {
+				EX_ans[0] = makeArith(id_pipe.cmd.src1, id_pipe.cmd.src2, id_pipe.cmd.isSrc2Imm, opc);
+			}
+			else if(opc == CMD_LOAD) {
+				EX_ans[0] = makeArith(id_pipe.cmd.src1, id_pipe.cmd.src2, id_pipe.cmd.isSrc2Imm, opc);
+			}
+			else if(opc == CMD_STORE) {
+				EX_ans[0] = makeArith(id_pipe.cmd.dst, id_pipe.cmd.src2, id_pipe.cmd.isSrc2Imm, opc);
+			}
+			else if(opc == CMD_BR || opc == CMD_BREQ || opc == CMD_BRNEQ) {
+				EX_ans[0] = (id_pipe.cmd.src1 == id_pipe.cmd.src2) ? 1 : 0;
+			}
 		}
-		else if(opc == CMD_BR || opc == CMD_BREQ || opc == CMD_BRNEQ) {
-			EX_ans = (EX_tmp.cmd.src1 == EX_tmp.cmd.src2) ? 1 : 0;
+		// MEM
+		if(stages_filled >= 3) {
+			MEM_ans[1] = MEM_ans[0];
+			memset(mainCoreState.pipeStageState[3].cmd, ex_pipe, sizeof(SIM_cmd));\
+			MEM_ans[0] = EX_ans[1];
+			SIM_cmd_opcode opc = ex_pipe.opcode;
+			if(opc == CMD_STORE) {
+					SIM_MemDataWrite(MEM_ans[0], ex_pipe.cmd.src1);
+			}
+			else if(opc == CMD_LOAD) {
+				if(!SIM_MemDataRead(MEM_ans[0], MEM_ans))
+					//something!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+					;
+			}
+			else if(opc == CMD_BR || (opc == CMD_BREQ && MEM_ans[0] == 1) || (opc == CMD_BRNEQ && MEM_ans[0] == 0)) {
+				mainCoreState.pc = stage_pc[MEMORY]
+			}
 		}
-		// MEM -> WB
-		memset(mainCoreState.pipeStageState[3].cmd, ex_pipe, sizeof(SIM_cmd));
-		SIM_cmd MEM_tmp = mainCoreState.pipeStageState[3].cmd;
-		SIM_cmd_opcode opc = MEM_tmp.opcode;
-		if(opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI) {
-			if(!MEM_tmp.cmd.dst)
-				SIM_MemDataWrite(MEM_tmp.cmd.dst, EX_ans);
+		// WB
+		if(stages_filled >= 4) {
+			WB_ans[1] = WB_ans[0];
+			SIM_cmd_opcode opc = wb_pipe.cmd.opcode;
+			if(wb_pipe.cmd.dst != 0 && (opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI || opc == CMD_LOAD)) {
+				curState.regFile[wb_pipe.cmd.dst] = WB_ans[1];
+			}
+			memset(mainCoreState.pipeStageState[4].cmd, mem_pipe, sizeof(SIM_cmd));
+			WB_ans[0] = MEM_ans[1];
 		}
 
-		// WB
+		//
+		++stages_filled;
 	}
 }
 
-int makeArith(int32_t reg1, int32_t reg2, bool isReg2Imm, int32_t dst, SIM_cmd_opcode opc) {
+int makeArith(int32_t reg1, int32_t reg2, bool isReg2Imm, SIM_cmd_opcode opc) {
 	int32_t num = (isReg2Imm) ? reg2 : mainCoreState.regFile[reg2];
-	int32_t action = (opc == CMD_ADD || opc == CMD_ADDI) ? 1 : -1;
+	int32_t action = (opc == CMD_ADD || opc == CMD_ADDI || opc == CMD_LOAD || opc = CMD_STORE) ? 1 : -1;
 	return mainCoreState.regFile[reg1] + action * num;
 }
 
