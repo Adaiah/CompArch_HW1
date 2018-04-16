@@ -3,11 +3,15 @@
 
 #include "sim_api.h"
 static SIM_coreState mainCoreState;
-static int32_t EX_ans[2] = {0,0}, MEM_ans[2] = {0,0}, WB_ans[2] = {0,0};
 static int32_t stage_pc[SIM_PIPELINE_DEPTH] = {0}; // pc of the current cmd in a stage + 4
 
-//0 - new command output
-//1 - old command output
+static int32_t EX_out = 0, MEM_IO[2] = {0,0}, WB_IO[2] = {0,0};
+//[0] - stage input
+//[1] - stage output
+
+typedef enum {
+    STAGE_IN = 0, STAGE_OUT,
+} stageIO;
 
 /*! SIM_CoreReset: Reset the processor core simulator machine to start new simulation
   Use this API to initialize the processor core simulator's data structures.
@@ -35,79 +39,95 @@ void SIM_CoreClkTick() {
 	SIM_cmd ex_pipe;
 	SIM_cmd mem_pipe;
 	SIM_cmd wb_pipe;
-	memcpy(if_pipe, mainCoreState.pipeStageState[0].cmd, sizeof(SIM_cmd));
-	memcpy(id_pipe, mainCoreState.pipeStageState[1].cmd, sizeof(SIM_cmd));
-	memcpy(ex_pipe, mainCoreState.pipeStageState[2].cmd, sizeof(SIM_cmd));
-	memcpy(mem_pipe, mainCoreState.pipeStageState[3].cmd, sizeof(SIM_cmd));
-	memcpy(wb_pipe, mainCoreState.pipeStageState[4].cmd, sizeof(SIM_cmd));
+	memcpy(if_pipe, mainCoreState.pipeStageState[FETCH].cmd, sizeof(SIM_cmd));
+	memcpy(id_pipe, mainCoreState.pipeStageState[DECODE].cmd, sizeof(SIM_cmd));
+	memcpy(ex_pipe, mainCoreState.pipeStageState[EXECUTE].cmd, sizeof(SIM_cmd));
+	memcpy(mem_pipe, mainCoreState.pipeStageState[MEMORY].cmd, sizeof(SIM_cmd));
+	memcpy(wb_pipe, mainCoreState.pipeStageState[WRITEBACK].cmd, sizeof(SIM_cmd));
+	int32_t pc_tmp1, pc_tmp2;
+	SIM_cmd_opcode opc;
 	if( !split_regfile && !forwarding ) {//when we start the machine nothing is initialized!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 										 // should also do something with src1Val and src2Val!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-		// IF 
-		SIM_MemInstRead(mainCoreState.pc, mainCoreState.pipeStageState[0].cmd);
+		/*###################### IF ######################*/
+		// On clock tick
+		SIM_MemInstRead(mainCoreState.pc, mainCoreState.pipeStageState[FETCH].cmd);
 		mainCoreState.pc += 4;
-		stages_filled[FETCH] = mainCoreState.pc;
-		// ID
-		if(stages_filled[DECODE]) {
-			memcpy(mainCoreState.pipeStageState[1].cmd, if_pipe, sizeof(SIM_cmd));
+		pc_tmp1 = stage_curr_pc[FETCH];
+		stage_curr_pc[FETCH] = mainCoreState.pc; // pc + 4
+
+		/*###################### ID ######################*/
+		// On clock tick
+		pc_tmp2 = stage_curr_pc[DECODE];
+		//Action
+		memcpy(mainCoreState.pipeStageState[DECODE].cmd, if_pipe, sizeof(SIM_cmd));
+		stage_curr_pc[DECODE] = pc_tmp1;
+		pc_tmp1 = pc_tmp2;
+
+
+		/*###################### EX ######################*/
+		// On clock tick
+		pc_tmp2 = stage_curr_pc[EXECUTE];
+		MEM_IO[STAGE_IN] = EX_out;
+		//Action
+		memcpy(mainCoreState.pipeStageState[EXECUTE].cmd, id_pipe, sizeof(SIM_cmd));
+		stage_curr_pc[EXECUTE] = pc_tmp1;
+		pc_tmp1 = pc_tmp2;
+		opc = id_pipe.opcode;
+		if(opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI) {
+			EX_out = makeArith(id_pipe.src1, id_pipe.src2, id_pipe.isSrc2Imm, opc);
 		}
-		// EX
-		if(stages_filled[EXECUTE]) {
-			EX_ans[1] = EX_ans[0];
-			memcpy(mainCoreState.pipeStageState[2].cmd, id_pipe, sizeof(SIM_cmd));
-			SIM_cmd_opcode opc = id_pipe.opcode;
-			if(opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI) {
-				EX_ans[0] = makeArith(id_pipe.src1, id_pipe.src2, id_pipe.isSrc2Imm, opc);
-			}
-			else if(opc == CMD_LOAD) {
-				EX_ans[0] = makeArith(id_pipe.src1, id_pipe.src2, id_pipe.isSrc2Imm, opc);
-			}
-			else if(opc == CMD_STORE) {
-				EX_ans[0] = makeArith(id_pipe.dst, id_pipe.src2, id_pipe.isSrc2Imm, opc);
-			}
-			else if(opc == CMD_BR || opc == CMD_BREQ || opc == CMD_BRNEQ) {
-				EX_ans[0] = (id_pipe.src1 == id_pipe.src2) ? 1 : 0;
+		else if(opc == CMD_LOAD) {
+			EX_out = makeArith(id_pipe.src1, id_pipe.src2, id_pipe.isSrc2Imm, opc);
+		}
+		else if(opc == CMD_STORE) {
+			EX_out = makeArith(id_pipe.dst, id_pipe.src2, id_pipe.isSrc2Imm, opc);
+		}
+		else if(opc == CMD_BR || opc == CMD_BREQ || opc == CMD_BRNEQ) {
+			EX_out = (id_pipe.src1 == id_pipe.src2) ? 1 : 0;
+		}
+		//// else nope - so will ignore
+
+
+		/*###################### MEM ######################*/
+		// On clock tick
+		pc_tmp2 = stage_curr_pc[MEMORY];
+		WB_IO[STAGE_IN] = MEM_IO[STAGE_OUT];
+		//Action
+		memcpy(mainCoreState.pipeStageState[MEMORY].cmd, ex_pipe, sizeof(SIM_cmd));
+		stage_curr_pc[MEMORY] = pc_tmp1;
+		pc_tmp1 = pc_tmp2;
+		opc = ex_pipe.opcode;
+		if(opc == CMD_BR || (opc == CMD_BREQ && MEM_IO[STAGE_IN] == 1) || (opc == CMD_BRNEQ && MEM_IO[STAGE_IN] == 0)) {
+			mainCoreState.pc = stage_curr_pc[MEMORY] + mem_pipe.dst; // the next command is the answer from the EX stage
+			for (int i = FETCH; i <= EXECUTE; ++i)
+			{
+				memset(mainCoreState.pipeStageState[i], 0, sizeof(PipeStageState));
+				stage_curr_pc[i] = 0;
 			}
 		}
-		// MEM
-		if(stages_filled[MEMORY]) {
-			MEM_ans[1] = MEM_ans[0];
-			memcpy(mainCoreState.pipeStageState[3].cmd, ex_pipe, sizeof(SIM_cmd));\
-			MEM_ans[0] = EX_ans[1];
-			SIM_cmd_opcode opc = ex_pipe.opcode;
-			if(opc == CMD_STORE) {
-					SIM_MemDataWrite(MEM_ans[0], ex_pipe.src1);
-			}
-			else if(opc == CMD_LOAD) {
-				if(!SIM_MemDataRead(MEM_ans[0], MEM_ans))
-					//something!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-					;
-			}
-			else if(opc == CMD_BR || (opc == CMD_BREQ && MEM_ans[0] == 1) || (opc == CMD_BRNEQ && MEM_ans[0] == 0)) {
-				mainCoreState.pc = stages_filled[MEMORY] + ex_pipe.dst; // the next command is the answer from the EX stage
-				memcpy(mainCoreState.pipeStageState[FETCH].cmd, 0, sizeof(SIM_cmd));
-				memcpy(mainCoreState.pipeStageState[DECODE].cmd, 0, sizeof(SIM_cmd));
-				memcpy(mainCoreState.pipeStageState[EXECUTE].cmd, 0, sizeof(SIM_cmd));
-				stages_filled[FETCH] = 0;
-				stages_filled[DECODE] = 0;
-				stages_filled[EXECUTE] = 0;
-			}
+		else if(opc == CMD_STORE) {
+			SIM_MemDataWrite(MEM_IO[STAGE_IN], mem_pipe.src1);
 		}
-		// WB
-		if(stages_filled[WRITEBACK]) {
-			WB_ans[1] = WB_ans[0];
-			SIM_cmd_opcode opc = wb_pipe.opcode;
-			if(wb_pipe.dst != 0 && (opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI || opc == CMD_LOAD)) {
-				curState.regFile[wb_pipe.dst] = WB_ans[1];
-			}
-			memcpy(mainCoreState.pipeStageState[4].cmd, mem_pipe, sizeof(SIM_cmd));
-			WB_ans[0] = MEM_ans[1];
+		else if(opc == CMD_LOAD) {
+			if(!SIM_MemDataRead(MEM_IO[STAGE_IN], &MEM_IO[STAGE_OUT]))
+				//something!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+				;
 		}
+		MEM_IO[STAGE_OUT] = MEM_IO[STAGE_IN];
+		//// else nope - so will ignore
+
+		/*###################### WB ######################*/
+		// On clock tick
+		opc = wb_pipe.opcode;
+		if(wb_pipe.dst != 0 && (opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI || opc == CMD_LOAD)) {
+			curState.regFile[wb_pipe.dst] = WB_IO[STAGE_OUT];
+		}
+		//Action
+		memcpy(mainCoreState.pipeStageState[WRITEBACK].cmd, mem_pipe, sizeof(SIM_cmd));
+		stage_curr_pc[WRITEBACK] = pc_tmp1;
+		WB_IO[STAGE_OUT] = MEM_IO[STAGE_IN];
 
 		//
-		stages_filled[WRITEBACK] = stages_filled[MEMORY];
-		stages_filled[MEMORY] = stages_filled[EXECUTE];
-		stages_filled[EXECUTE] = stages_filled[DECODE];
-		stages_filled[DECODE] = stages_filled[FETCH];
 	}
 }
 
