@@ -98,7 +98,7 @@ void SIM_CoreClkTick() {
 		pc_tmp1 = pc_tmp2;
 		opc = ex_pipe.opcode;
 		if(opc == CMD_BR || (opc == CMD_BREQ && MEM_IO[STAGE_IN] == 1) || (opc == CMD_BRNEQ && MEM_IO[STAGE_IN] == 0)) {
-			mainCoreState.pc = stage_curr_pc[MEMORY] + mem_pipe.dst; // the next command is the answer from the EX stage
+			mainCoreState.pc = stage_curr_pc[MEMORY] + ex_pipe.dst; // the next command is the answer from the EX stage
 			for (int i = FETCH; i <= EXECUTE; ++i)
 			{
 				memset(mainCoreState.pipeStageState[i], 0, sizeof(PipeStageState));
@@ -106,7 +106,7 @@ void SIM_CoreClkTick() {
 			}
 		}
 		else if(opc == CMD_STORE) {
-			SIM_MemDataWrite(MEM_IO[STAGE_IN], mem_pipe.src1);
+			SIM_MemDataWrite(MEM_IO[STAGE_IN], ex_pipe.src1);
 		}
 		else if(opc == CMD_LOAD) {
 			if(!SIM_MemDataRead(MEM_IO[STAGE_IN], &MEM_IO[STAGE_OUT]))
@@ -120,7 +120,7 @@ void SIM_CoreClkTick() {
 		// On clock tick
 		opc = wb_pipe.opcode;
 		if(wb_pipe.dst != 0 && (opc == CMD_ADD || opc == CMD_SUB || opc == CMD_ADDI || opc == CMD_SUBI || opc == CMD_LOAD)) {
-			curState.regFile[wb_pipe.dst] = WB_IO[STAGE_OUT];
+			mainCoreState.regFile[wb_pipe.dst] = WB_IO[STAGE_OUT];
 		}
 		//Action
 		memcpy(mainCoreState.pipeStageState[WRITEBACK].cmd, mem_pipe, sizeof(SIM_cmd));
@@ -135,11 +135,6 @@ int makeArith(int32_t reg1, int32_t reg2, bool isReg2Imm, SIM_cmd_opcode opc) {
 	int32_t num = (isReg2Imm) ? reg2 : mainCoreState.regFile[reg2];
 	int32_t action = (opc == CMD_ADD || opc == CMD_ADDI || opc == CMD_LOAD || opc = CMD_STORE) ? 1 : -1;
 	return mainCoreState.regFile[reg1] + action * num;
-}
-
-void makeLoad(int32_t reg1, int32_t imm, int32_t dst) {
-	if(dst == 0) return;
-
 }
 
 /*! SIM_CoreGetState: Return the current core (pipeline) internal state
